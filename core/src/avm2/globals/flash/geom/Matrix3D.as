@@ -74,6 +74,7 @@ package flash.geom {
 		public function Matrix3D(v:Vector.<Number> = null) {
 			if (v != null && v.length == 16) {
 				this._rawData = v.AS3::concat();
+				// should we use the set rawData here ?
 			}
 			else {
 				this.identity();
