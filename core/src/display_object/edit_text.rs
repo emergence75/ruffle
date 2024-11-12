@@ -647,6 +647,28 @@ impl<'gc> EditText<'gc> {
             .set(flag, value);
     }
 
+    /// Returns the matrix for transforming from layout
+    /// coordinate space into this object's local space.
+    fn layout_to_local_matrix(self, data: &EditTextData) -> Matrix {
+        Matrix::translate(
+            data.bounds.x_min + Self::GUTTER - Twips::from_pixels(data.hscroll),
+            data.bounds.y_min + Self::GUTTER - data.vertical_scroll_offset(),
+        )
+    }
+
+    /// Returns the matrix for transforming from this object's
+    /// local space into its layout coordinate space.
+    fn local_to_layout_matrix(self, data: &EditTextData) -> Matrix {
+        // layout_to_local contains only a translation,
+        // no need to inverse the matrix generically.
+        let Matrix { tx, ty, .. } = self.layout_to_local_matrix(data);
+        Matrix::translate(-tx, -ty)
+    }
+
+    fn local_to_layout(&self, data: &EditTextData, local: Point<Twips>) -> Point<Twips> {
+        self.local_to_layout_matrix(data) * local
+    }
+
     pub fn replace_text(
         self,
         from: usize,
@@ -1316,11 +1338,8 @@ impl<'gc> EditText<'gc> {
 
     pub fn screen_position_to_index(self, position: Point<Twips>) -> Option<usize> {
         let text = self.0.read();
-        let mut position = self.global_to_local(position)?;
-        position.x += Twips::from_pixels(text.hscroll) - Self::GUTTER;
-        position.y += text.vertical_scroll_offset() - Self::GUTTER;
-        position.x -= text.bounds.x_min;
-        position.y -= text.bounds.y_min;
+        let position = self.global_to_local(position)?;
+        let position = self.local_to_layout(&text, position);
 
         // TODO We can use binary search for both y and x here
 
@@ -2329,32 +2348,16 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             }
         }
 
-        context.transform_stack.push(&Transform {
-            matrix: Matrix::translate(edit_text.bounds.x_min, edit_text.bounds.y_min),
-            ..Default::default()
-        });
-
         context.commands.push_mask();
-        let mask = Matrix::create_box(
-            edit_text.bounds.width().to_pixels() as f32,
-            edit_text.bounds.height().to_pixels() as f32,
-            Twips::ZERO,
-            Twips::ZERO,
-        );
+        let mask = Matrix::create_box_from_rectangle(&edit_text.bounds);
         context.commands.draw_rect(
             Color::WHITE,
             context.transform_stack.transform().matrix * mask,
         );
         context.commands.activate_mask();
 
-        let scroll_offset = edit_text.vertical_scroll_offset();
-        // TODO: Where does this come from? How is this different than INTERNAL_PADDING? Does this apply to y as well?
-        // If this is actually right, offset the border in `redraw_border` instead of doing an extra push.
         context.transform_stack.push(&Transform {
-            matrix: Matrix::translate(
-                Self::GUTTER - Twips::from_pixels(edit_text.hscroll),
-                Self::GUTTER - scroll_offset,
-            ),
+            matrix: self.layout_to_local_matrix(&edit_text),
             ..Default::default()
         });
 
@@ -2378,8 +2381,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
             context.transform_stack.transform().matrix * mask,
         );
         context.commands.pop_mask();
-
-        context.transform_stack.pop();
     }
 
     fn allow_as_mask(&self) -> bool {
@@ -2411,10 +2412,6 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
                 .unbound_text_fields
                 .retain(|&text_field| !DisplayObject::ptr_eq(text_field.into(), (*self).into()));
         }
-
-        context
-            .audio_manager
-            .stop_sounds_with_display_object(context.audio, (*self).into());
 
         self.set_avm1_removed(context.gc_context, true);
     }
